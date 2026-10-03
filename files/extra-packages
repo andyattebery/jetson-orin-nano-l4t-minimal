@@ -1,0 +1,7 @@
+# Packages added to NVIDIA's minimal list by scripts/build.sh, one per line. Lines starting with #
+# are dropped before NVIDIA's script reads the list.
+#
+# cloud-init applies the card's seed files (the CIDATA volume) on first boot. It depends on
+# cloud-guest-utils, whose growpart grows the root partition to the card. R39.2's image never does
+# that itself: NVIDIA dropped nvresizefs.
+cloud-init

@@ -1,0 +1,4 @@
+# Example per-card metadata. Copy onto the card's CIDATA volume with user-data. cloud-init takes
+# the hostname from local-hostname; instance-id is any string unique to the card.
+instance-id: jetson-01
+local-hostname: jetson-01

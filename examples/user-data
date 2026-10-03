@@ -1,0 +1,13 @@
+#cloud-config
+# Example first-boot settings. Copy this file and meta-data onto the card's CIDATA volume; cloud-init
+# needs both. Replace the key with your own. More settings:
+# https://docs.cloud-init.io/en/latest/reference/examples.html
+users:
+  - name: jetson
+    groups: [sudo, video, render]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - "ssh-ed25519 AAAA...replace-with-your-public-key"
+ssh_pwauth: false
