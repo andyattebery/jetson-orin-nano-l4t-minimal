@@ -85,8 +85,31 @@ QSPI updates (Traps).
 
 ## Building
 
-**In CI.** [.github/workflows/build.yml](.github/workflows/build.yml) runs on GitHub's
-`ubuntu-24.04` runner.
+[scripts/build.sh](scripts/build.sh) runs in two stages, as root, on Ubuntu 24.04. Each step is
+stamped with the time in the log.
+
+1. **`rootfs`, on arm64 or x86-64.** It makes NVIDIA's minimal root filesystem plus
+   `files/extra-packages`, using NVIDIA's `nv_build_samplefs.sh`. The output is
+   `<flavor>-<codename>-R<version>-rootfs.tbz2` with its `.sha256`.
+   - **On arm64** the roughly 990 arm64 packages install natively, behind a one-line `arch` shim
+     for NVIDIA's x86 check (Traps).
+   - **On x86-64** they install under qemu. The first CI run spent over 38 minutes there.
+2. **`image`, on x86-64 only**, because NVIDIA's flashing tools are x86 binaries. It takes that
+   tarball and runs:
+   - NVIDIA's host prerequisites;
+   - `apply_binaries.sh`;
+   - the cloud-init drop-in, and removal of the SSH host keys;
+   - `jetson-disk-image-creator.sh ... -d SD`;
+   - `make-cidata.sh`;
+   - `xz` and sha256.
+
+Each stage first installs the host packages it needs, then downloads the BSP and checks it against
+`BSP_SHA256`.
+
+**In CI.** [.github/workflows/build.yml](.github/workflows/build.yml) runs `rootfs` on GitHub's
+`ubuntu-24.04-arm` runner and `image` on `ubuntu-24.04`.
+- **The hand-off:** the tarball passes between the two jobs through the Actions cache, keyed by
+  run. Artifacts would count against the account's storage quota.
 - **When:** a push to `main` that changes `versions.env`, `scripts/`, `files/` or the workflow,
   or a manual run from the Actions tab.
 - **What it publishes:** a release, `R<L4T_VERSION>-<run number>`, with three files:
@@ -94,27 +117,17 @@ QSPI updates (Traps).
   - its `.sha256`;
   - NVIDIA's license text.
 
-**Locally.** On an x86-64 Ubuntu 24.04 host, as root:
+**Locally**, from the repo root:
 ```
 mkdir -p work
-sudo scripts/build.sh --work-dir work --out out
+sudo scripts/build.sh rootfs --work-dir work --out out
+sudo scripts/build.sh image --rootfs-tar out/minimal-noble-R39.2.1-rootfs.tbz2 --work-dir work --out out
 ```
-- **Why that host:** NVIDIA's flashing tools are x86-64 only, and `nv_build_samplefs.sh` builds
-  noble only on Ubuntu 24.04.
-- **Space:** `work` needs 30 GiB free.
-- **Re-running:** the script won't reuse an existing `work/R<version>/`. Remove it first, after
-  checking that nothing is mounted under it or attached to it.
-
-**The steps** ([scripts/build.sh](scripts/build.sh)). Each is stamped with the time in the log.
-1. Install the host packages the download and NVIDIA's rootfs builder need.
-2. Download the BSP and check it against `BSP_SHA256`.
-3. Run NVIDIA's host prerequisites script.
-4. Build the root filesystem with `nv_build_samplefs.sh`, plus `files/extra-packages`.
-5. `apply_binaries.sh`.
-6. Install the cloud-init drop-in, and remove the SSH host keys.
-7. `jetson-disk-image-creator.sh ... -d SD`.
-8. `make-cidata.sh`.
-9. `xz` and sha256.
+- **Hosts:** run `rootfs` on an arm64 or x86-64 host and `image` on an x86-64 one. Copy the
+  tarball and its `.sha256` between them.
+- **Space:** `work` needs 10 GiB free for `rootfs` and 30 GiB for `image`.
+- **Re-running:** neither stage reuses its existing `work/R<version>-<stage>/`. Remove it first,
+  after checking that nothing is mounted under it or attached to it.
 
 ## A new L4T release
 
@@ -167,6 +180,15 @@ has one free for it.
     series", while its example is `-b jetson-orin-nano-devkit -r 100`.
   - The code agrees with the section: `jetson-disk-image-creator.sh` hard-codes SKU 0005 for both
     Orin Nano configs. The documented line without `-d` fails ("Incorrect root filesystem device").
+- **NVIDIA's rootfs builder only runs on x86-64, as shipped.** `nv_build_samplefs.sh` stops at
+  `arch | grep x86_64` (line 106 in R39.2.1). That is its only use of the host's architecture: the
+  rest downloads Ubuntu's arm64 base, chroots into it and installs packages, which an arm64 host
+  does natively.
+  - On arm64, `build.sh` puts a shim first on `PATH` for that script only, a two-line `arch` that
+    prints `x86_64`.
+  - NVIDIA doesn't support building on arm64. The shim built the same R39.2.1 rootfs on an arm64
+    Mac in about 2.5 minutes (2026-10-02).
+  - Re-check line 106 when bumping L4T.
 - **R39.2's image never grows its root partition.** NVIDIA, 2026-09-02: "On R39.2 the image from
   jetson-disk-image-creator.sh never expands, so the root filesystem stays at its generated size
   with no free space. Up to R36.5 this expansion was done on first boot by nvresizefs, which R39.2

@@ -16,14 +16,39 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
+  rootfs:
+    # Native arm64: the root filesystem is about 990 arm64 packages, which take a long time to
+    # install under qemu on an x86 runner. Run 37148236561 spent over 38 minutes on it.
+    runs-on: ubuntu-24.04-arm
     # GitHub's limit for a job on its runners.
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7
 
-      # The runner has 14 GB of SSD, and scripts/build.sh needs 30 GiB free.
+      - name: Build the root filesystem
+        run: |
+          df -h /
+          mkdir -p "$RUNNER_TEMP/work"
+          sudo scripts/build.sh rootfs --work-dir "$RUNNER_TEMP/work" --out out
+
+      # Passed through the cache, not an artifact: artifacts count against the account's storage
+      # quota, which the tarball can exceed. The cache allows 10 GB per repository and drops
+      # entries unused for 7 days.
+      - name: Hand the root filesystem to the image job
+        uses: actions/cache/save@v6
+        with:
+          path: out
+          key: rootfs-${{ github.run_id }}
+
+  image:
+    needs: rootfs
+    # NVIDIA's flashing tools are x86 binaries.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7
+
+      # The runner has 14 GB of SSD, and the image stage needs 30 GiB free.
       - name: Free disk space
         run: |
           df -h /
@@ -31,10 +56,19 @@ jobs:
           docker image prune --all --force
           df -h /
 
-      - name: Build
+      - name: Get the root filesystem
+        uses: actions/cache/restore@v6
+        with:
+          path: out
+          key: rootfs-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: Build the image
         run: |
+          . ./versions.env
           mkdir -p "$RUNNER_TEMP/work"
-          sudo scripts/build.sh --work-dir "$RUNNER_TEMP/work" --out "$RUNNER_TEMP/out"
+          sudo scripts/build.sh image --rootfs-tar "out/$ROOTFS_FLAVOR-$UBUNTU_CODENAME-R$L4T_VERSION-rootfs.tbz2" \
+            --work-dir "$RUNNER_TEMP/work" --out "$RUNNER_TEMP/out"
 
       - name: Publish
         env:
