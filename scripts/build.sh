@@ -3,8 +3,9 @@
 #   rootfs  NVIDIA's minimal Ubuntu 24.04 root filesystem plus files/extra-packages (cloud-init).
 #           Runs natively on arm64 behind a one-line shim for NVIDIA's x86 check, or on x86-64
 #           under qemu, which is much slower.
-#   image   NVIDIA's L4T packages, the cloud-init drop-in, NVIDIA's SD card layout and the CIDATA
-#           seed volume, compressed. x86-64 only: NVIDIA's flashing tools are x86 binaries.
+#   image   NVIDIA's L4T packages, the cloud-init drop-in, the wait for NTP, NVIDIA's SD card
+#           layout and the CIDATA seed volume, compressed. x86-64 only: NVIDIA's flashing tools
+#           are x86 binaries.
 # Both run as root on Ubuntu 24.04. The GitHub workflow (.github/workflows/build.yml) runs rootfs
 # on ubuntu-24.04-arm and image on ubuntu-24.04.
 set -euo pipefail
@@ -196,6 +197,13 @@ rm -f "$ROOTFS"/etc/ssh/ssh_host_*
 if compgen -G "$ROOTFS/etc/ssh/ssh_host_*" >/dev/null; then
     die "SSH host keys remain in the root filesystem"
 fi
+# cloud-init's final stage (packages, runcmd) is ordered after time-sync.target, which waits for
+# NTP only if systemd-time-wait-sync is enabled, and systemd ships it disabled. A new card boots
+# with its clock at 1970, so without the wait apt rejects Ubuntu's indexes as not yet valid.
+wait_sync=usr/lib/systemd/system/systemd-time-wait-sync.service
+grep -qx 'WantedBy=sysinit.target' "$ROOTFS/$wait_sync" ||
+    die "$wait_sync is missing from the root filesystem, or is no longer WantedBy=sysinit.target"
+ln -sv "/$wait_sync" "$ROOTFS/etc/systemd/system/sysinit.target.wants/"
 
 step "SD card image"
 NAME="$BOARD_CONFIG-R$L4T_VERSION.img"

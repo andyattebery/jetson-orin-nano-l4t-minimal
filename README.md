@@ -8,7 +8,11 @@ by GitHub Actions.
 
 ## Status
 
-WIP. The first build hasn't run yet, and no card from this image has booted.
+WIP. Release R39.2.1-2 booted on one module, a P3767-0005 in a Turing Pi 2 (2026-10-03).
+- **Applied:** cloud-init applied its seed, created the user with its keys, set the hostname, and
+  grew the root to fill the card.
+- **Failed:** `packages:`, because cloud-init's final stage ran with the clock at 1970 (Traps).
+- **Fixed, untested:** releases after R39.2.1-2 make that stage wait for NTP. None has booted yet.
 
 ## What you need
 
@@ -47,6 +51,21 @@ means users and keys, plus anything else `user-data` sets. The hostname comes fr
   end of the card (growpart, resizefs);
 - generates the card's SSH host keys. The image carries none.
 
+**Packages and `runcmd` wait for NTP.** cloud-init's final stage starts only once
+`systemd-timesyncd` has set the clock from NTP. That stage runs:
+- `packages`;
+- `runcmd`'s commands;
+- deferred `write_files`.
+
+The module boots with its clock at 1970, and apt can't work until it's right (Traps). Users, keys,
+the hostname, `write_files` and the root growth all come before the wait, so you can log in while
+it waits.
+- **With no NTP server in reach**, the final stage waits, with no timeout, until one answers.
+  `timedatectl` shows whether the clock is synchronized. NVIDIA sets timesyncd's fallback servers
+  to `0.pool.ntp.org 1.pool.ntp.org 0.fr.pool.ntp.org`.
+- **The config stage doesn't wait.** Its modules, such as `apt` sources and `snap`, can run with
+  the clock still at 1970 and before DHCP has finished (Traps).
+
 **Networking:** NetworkManager runs DHCP on Ethernet. NVIDIA turns off cloud-init's network
 configuration, so a `network-config` file on `CIDATA` is ignored.
 
@@ -64,6 +83,9 @@ write_files:
     defer: true
     content: ""
 ```
+Once the marker exists, `cloud-init status` says `disabled`, and after a reboot it stops showing
+the first boot's errors. The first boot's outcome stays in `/var/lib/cloud/data/result.json` and
+`/var/log/cloud-init.log`.
 
 **With no seed:** NVIDIA's default applies. cloud-init runs with no data and disables itself.
 There's no user and no way in, so rewrite the card.
@@ -76,12 +98,19 @@ There's no user and no way in, so rewrite the card.
 - **NVIDIA's packages**, installed by `apply_binaries.sh` and left unchanged.
 - **[files/99-nocloud-seed.cfg](files/99-nocloud-seed.cfg)**, which turns cloud-init back on for
   `CIDATA` (Traps).
+- **`systemd-time-wait-sync` enabled.** systemd ships it disabled. With it, `time-sync.target`
+  waits for NTP, and so does cloud-init's final stage (First boot).
+  - The only other units that wait are the calendar timers, such as `apt-daily`.
+  - Logins and `multi-user.target` don't wait for NTP. No NVIDIA unit in R39.2.1 is ordered after
+    `time-sync.target`.
 - **No SSH host keys.**
 - **The card layout** from NVIDIA's `jetson-disk-image-creator.sh` (`flash_t234_qspi_sd.xml`), with
   its `UDA` partition made into `CIDATA` by [scripts/make-cidata.sh](scripts/make-cidata.sh).
 
-Everything else is NVIDIA's default, including its first-boot 2 GB `/swapfile` and its automatic
-QSPI updates (Traps).
+Everything else is NVIDIA's default, including:
+- its first-boot 2 GB `/swapfile`;
+- its masked `NetworkManager-wait-online` (Traps);
+- its automatic QSPI updates (Traps).
 
 ## Building
 
@@ -91,14 +120,16 @@ stamped with the time in the log.
 1. **`rootfs`, on arm64 or x86-64.** It makes NVIDIA's minimal root filesystem plus
    `files/extra-packages`, using NVIDIA's `nv_build_samplefs.sh`. The output is
    `<flavor>-<codename>-R<version>-rootfs.tbz2` with its `.sha256`.
-   - **On arm64** the roughly 990 arm64 packages install natively, behind a one-line `arch` shim
+   - **On arm64** the roughly 990 arm64 packages install natively, behind a two-line `arch` shim
      for NVIDIA's x86 check (Traps).
-   - **On x86-64** they install under qemu. The first CI run spent over 38 minutes there.
+   - **On x86-64** they install under qemu. In CI, NVIDIA's script took 73 minutes under qemu,
+     against 4 natively on arm64 (2026-10-03).
 2. **`image`, on x86-64 only**, because NVIDIA's flashing tools are x86 binaries. It takes that
    tarball and runs:
    - NVIDIA's host prerequisites;
    - `apply_binaries.sh`;
-   - the cloud-init drop-in, and removal of the SSH host keys;
+   - the image edits: the cloud-init drop-in, removal of the SSH host keys, and
+     `systemd-time-wait-sync` enabled;
    - `jetson-disk-image-creator.sh ... -d SD`;
    - `make-cidata.sh`;
    - `xz` and sha256.
@@ -197,6 +228,18 @@ has one free for it.
   `/etc/cloud/cloud.cfg.d/99-disable-cloud-init.cfg`, with `datasource_list: [None]` plus user-data
   that turns off growpart and writes `/etc/cloud/cloud-init.disabled`. `99-nocloud-seed.cfg` sorts
   after it and puts NoCloud first.
+- **A new card's clock starts at 1970.** On R39.2.1-2's first boot (2026-10-03), cloud-init's log
+  read `1970-01-01 00:00:56`. apt rejected every Ubuntu index: "Release file … is not valid yet
+  (invalid for another 20729d)".
+  - So the image makes cloud-init's final stage wait for NTP (First boot).
+  - Anything that runs before the sync sees 1970, when TLS certificates aren't valid yet either.
+- **`network-online.target` doesn't wait for the network.** NVIDIA masks
+  `NetworkManager-wait-online.service` (`nv_customize_rootfs.sh` lines 80-85, "for Bug 200290321",
+  which isn't public).
+  - Units ordered after `network-online.target` can start before DHCP finishes, and that includes
+    cloud-init's config stage.
+  - The image keeps the mask. An NTP sync needs DNS and a route out, so the wait for NTP holds the
+    final stage until the network works.
 - **QSPI and the card must be the same release.** Rebuild for a new release, and flash QSPI too.
 - **Carriers without the developer kit's EEPROM**, such as the Turing Pi 2, need two things:
   - QSPI flashed with NVIDIA's EEPROM read turned off;
@@ -237,6 +280,10 @@ has one free for it.
   jetson-disk-image-creator.sh for jetson orin nano board" (2026-08/09):
   https://forums.developer.nvidia.com/t/issue-on-external-sdcard-image-generate-by-jetson-disk-image-creator-sh-for-jetson-orin-nano-board/380597
 - **cloud-init 26.1:** https://docs.cloud-init.io/en/26.1/ (NoCloud, base configuration, modules),
-  and the source at tag `26.1`.
+  the source at tag `26.1`, and Ubuntu's `26.1-0ubuntu1~24.04.1` package: its systemd units,
+  `cloud.cfg`, `cmd/main.py` and `cmd/status.py`.
+- **systemd 255 on noble** (`255.4-1ubuntu8.17`): the man pages for
+  `systemd-time-wait-sync.service`(8), `systemd.timer`(5) and `systemd.target`(5) at
+  https://manpages.ubuntu.com/manpages/noble/, and the units in the root filesystem.
 - **Raspberry Pi OS's move to cloud-init:**
   https://www.raspberrypi.com/news/cloud-init-on-raspberry-pi-os/ (2025-11-27).
