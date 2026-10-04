@@ -10,3 +10,9 @@ cloud-init
 # fwupdtool, and exits 1 without them. NVIDIA's desktop root filesystem has fwupd; its minimal
 # package list doesn't.
 fwupd
+
+# udisks2 is how fwupd finds the ESP to stage a capsule on. Without it fwupd reports "UEFI ESP
+# partition not detected", and the install script's staging fails without saying so. fwupd only
+# recommends udisks2, and NVIDIA's script installs without recommends; NVIDIA's desktop list names
+# it. fwupd's other recommends aren't needed for capsules on this board.
+udisks2

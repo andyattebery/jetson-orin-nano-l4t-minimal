@@ -87,7 +87,7 @@ There's no user and no way in, so rewrite the card.
 ## What's in the image
 
 - **Root filesystem:** NVIDIA's `minimal` flavor from `nv_build_samplefs.sh` (Ubuntu 24.04, no
-  desktop, no oem-config), plus `cloud-init` and `fwupd`
+  desktop, no oem-config), plus `cloud-init`, `fwupd` and `udisks2`
   ([files/extra-packages](files/extra-packages)). `cloud-guest-utils`, for growpart, comes in as a
   dependency.
 - **NVIDIA's packages**, installed by `apply_binaries.sh` and left unchanged.
