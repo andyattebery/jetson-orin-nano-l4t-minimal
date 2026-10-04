@@ -1,5 +1,6 @@
 # Builds the SD card image and publishes it as a GitHub release (README.md). Runs when what the
-# image is built from changes on main, or by hand from the Actions tab.
+# image is built from changes on main, by hand from the Actions tab, and daily to look for a newer
+# NVIDIA release: one with the same major version is committed to versions.env, then built.
 name: Build image
 
 on:
@@ -11,19 +12,84 @@ on:
       - files/**
       - .github/workflows/build.yml
   workflow_dispatch:
+    inputs:
+      check:
+        description: Look for a newer NVIDIA release first, and build only if there is one
+        type: boolean
+        default: false
+  # Daily, off the hour. GitHub disables a public repository's schedule after 60 days with no
+  # activity (README.md, Traps).
+  schedule:
+    - cron: '41 12 * * *'
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
+  check:
+    # Decides what to build. A push, or a manual run without "check", builds its own commit. The
+    # schedule, or a manual run with "check", builds only a newer NVIDIA release.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      ref: ${{ steps.decide.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Look for a newer NVIDIA release
+        id: decide
+        env:
+          CHECK: ${{ github.event_name == 'schedule' || inputs.check }}
+        run: |
+          if [[ "$CHECK" != true ]]; then
+            { echo build=true; echo "ref=$GITHUB_SHA"; } >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          scripts/check-release.py --update
+          if git diff --quiet -- versions.env; then
+            echo build=false >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          . ./versions.env
+          # This push starts no run of its own: GitHub doesn't trigger workflows from pushes made
+          # with GITHUB_TOKEN. The build is this run's next jobs.
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Jetson Linux R$L4T_VERSION" -- versions.env
+          git push origin HEAD:main
+          { echo build=true; echo "ref=$(git rev-parse HEAD)"; } >>"$GITHUB_OUTPUT"
+
+      # A newer major isn't built automatically: it can move to another Ubuntu release or drop the
+      # Orin Nano (README.md, "A new L4T release"). One issue per major, open or closed.
+      - name: Open an issue for a newer major
+        if: steps.decide.outputs.report != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ steps.decide.outputs.report }}
+        run: |
+          for v in $REPORT; do
+            title="Jetson Linux R${v%%.*} is out"
+            found="$(gh issue list --state all --search "in:title \"$title\"" --json title |
+              jq --arg t "$title" '[.[] | select(.title == $t)] | length')"
+            if [[ "$found" == 0 ]]; then
+              gh issue create --title "$title" --body "NVIDIA's Jetson Linux archive (https://developer.nvidia.com/embedded/jetson-linux-archive) lists R$v, a newer major version than this repository builds. A new major isn't built automatically: it can move to another Ubuntu release or drop the Orin Nano. Moving to it is by hand: README.md, \"A new L4T release\"."
+            fi
+          done
+
   rootfs:
-    # Native arm64: the root filesystem is about 990 arm64 packages, which take a long time to
-    # install under qemu on an x86 runner. Run 37148236561 spent over 38 minutes on it.
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    # Native arm64: the root filesystem is about 990 arm64 packages. Under qemu on an x86 runner,
+    # NVIDIA's script took 73 minutes (run 37148236561); natively, 4.
     runs-on: ubuntu-24.04-arm
     # GitHub's limit for a job on its runners.
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.ref }}
 
       - name: Build the root filesystem
         run: |
@@ -41,14 +107,18 @@ jobs:
           key: rootfs-${{ github.run_id }}
 
   image:
-    needs: rootfs
+    needs: [check, rootfs]
+    if: needs.check.outputs.build == 'true'
     # NVIDIA's flashing tools are x86 binaries.
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check.outputs.ref }}
 
-      # The runner has 14 GB of SSD, and the image stage needs 30 GiB free.
+      # The image stage needs 30 GiB free. GitHub documents 14 GB of SSD for this runner, but run
+      # 37151129513 had 87 GB free before this step and 110 GB after.
       - name: Free disk space
         run: |
           df -h /
@@ -73,16 +143,26 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          REF: ${{ needs.check.outputs.ref }}
         run: |
           . ./versions.env
           image="$RUNNER_TEMP/out/$BOARD_CONFIG-R$L4T_VERSION.img.xz"
           sha="$(cut -d ' ' -f 1 "$image.sha256")"
+          # Builds of each L4T version are numbered from 1. The next number comes from the tags,
+          # which outlive a deleted release: reusing one would attach the new release to the old
+          # commit.
+          n="$(git ls-remote --tags origin |
+            sed -nE "s#^[0-9a-f]+[[:space:]]+refs/tags/R${L4T_VERSION//./\\.}-([0-9]+)\$#\1#p" |
+            sort -n | tail -n 1)"
+          n=$((${n:-0} + 1))
           notes="SD card image for the Jetson Orin Nano Developer Kit module (P3767-0005), Jetson Linux R$L4T_VERSION, $BOARD_CONFIG.
 
+          Flash the module's QSPI with Jetson Linux R$L4T_VERSION and $BOARD_CONFIG before it boots this card.
+
           sha256: $sha
-          Built from $GITHUB_SHA.
+          Built from $REF by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID.
 
           NVIDIA's software in this image is distributed under the attached Tegra Software License Agreement."
-          gh release create "R$L4T_VERSION-$GITHUB_RUN_NUMBER" --target "$GITHUB_SHA" \
-            --title "R$L4T_VERSION $BOARD_CONFIG (build $GITHUB_RUN_NUMBER)" --notes "$notes" \
+          gh release create "R$L4T_VERSION-$n" --target "$REF" \
+            --title "R$L4T_VERSION $BOARD_CONFIG (build $n)" --notes "$notes" \
             "$image" "$image.sha256" "$RUNNER_TEMP/out/Tegra_Software_License_Agreement-Tegra-Linux.txt"

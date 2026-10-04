@@ -4,8 +4,8 @@
 #           Runs natively on arm64 behind a one-line shim for NVIDIA's x86 check, or on x86-64
 #           under qemu, which is much slower.
 #   image   NVIDIA's L4T packages, the cloud-init drop-in, the wait for NTP, NVIDIA's SD card
-#           layout and the CIDATA seed volume, compressed. x86-64 only: NVIDIA's flashing tools
-#           are x86 binaries.
+#           layout and the CIDATA seed volume, compressed. It first checks which of NVIDIA's
+#           packages mention UDA. x86-64 only: NVIDIA's flashing tools are x86 binaries.
 # Both run as root on Ubuntu 24.04. The GitHub workflow (.github/workflows/build.yml) runs rootfs
 # on ubuntu-24.04-arm and image on ubuntu-24.04.
 set -euo pipefail
@@ -180,6 +180,23 @@ if [[ "$STAGE" == rootfs ]]; then
     exit 0
 fi
 
+step "NVIDIA's packages that mention UDA"
+# make-cidata.sh turns NVIDIA's UDA partition into CIDATA (README.md, "Why UDA"), which holds only
+# while nothing at runtime uses UDA. In R39.2.1 these three packages mention it: flash-server
+# strings in nvidia-l4t-bootloader's capsules, nvidia-igx-bootloader's capsule (not inspected), and
+# one string in a multimedia library. Any other package that mentions it stops the build until
+# someone reads why.
+uda_known=(nvidia-igx-bootloader nvidia-l4t-bootloader nvidia-l4t-multimedia)
+uda_new=()
+while IFS= read -r -d '' deb; do
+    hits="$(dpkg-deb --fsys-tarfile "$deb" | tar -xO 2>/dev/null | grep -a -c -w UDA || true)"
+    [[ "$hits" == 0 ]] && continue
+    pkg="$(dpkg-deb -f "$deb" Package)"
+    echo "$hits $pkg"
+    [[ " ${uda_known[*]} " == *" $pkg "* ]] || uda_new+=("$pkg")
+done < <(find "$L4T" -name '*.deb' -print0 | sort -z)
+((${#uda_new[@]} == 0)) || die "packages that newly mention UDA, to read before building: ${uda_new[*]}"
+
 step "NVIDIA's host prerequisites"
 "$L4T/tools/l4t_flash_prerequisites.sh"
 
@@ -191,6 +208,13 @@ ROOTFS="$L4T/rootfs"
 [[ -x "$ROOTFS/usr/bin/cloud-init" ]] || die "cloud-init is not in the root filesystem"
 install -m 0644 "$REPO/files/99-nocloud-seed.cfg" "$ROOTFS/etc/cloud/cloud.cfg.d/99-nocloud-seed.cfg"
 echo "cloud-init $(dpkg-query --admindir="$ROOTFS/var/lib/dpkg" -W -f '${Version}' cloud-init)"
+# cloud-init reads cloud.cfg.d in sorted order, and the last file to set a key wins. NVIDIA's
+# 99-disable-cloud-init.cfg sets datasource_list: [None], so this image's file must come after
+# every file that sets it, or cloud-init ignores CIDATA and the card has no user.
+last_ds="$(cd "$ROOTFS/etc/cloud/cloud.cfg.d" && grep -l '^datasource_list[[:space:]]*:' -- *.cfg | LC_ALL=C sort | tail -n 1)"
+[[ "$last_ds" == 99-nocloud-seed.cfg ]] ||
+    die "$last_ds sets datasource_list after 99-nocloud-seed.cfg, so cloud-init would ignore CIDATA"
+echo "datasource_list: 99-nocloud-seed.cfg is the last file to set it"
 # The root filesystem build generated SSH host keys, and a public image must not carry them.
 # cloud-init generates each card's own on its first boot.
 rm -f "$ROOTFS"/etc/ssh/ssh_host_*

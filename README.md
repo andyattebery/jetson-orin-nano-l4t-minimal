@@ -3,8 +3,8 @@
 A headless NVIDIA Jetson Linux (L4T) image for the **Jetson Orin Nano Developer Kit's module
 (P3767-0005)**, written to its microSD card. Like Raspberry Pi OS, it's configured on first boot
 from text files you copy onto the card: cloud-init reads `user-data` and `meta-data` from the
-card's FAT volume `CIDATA`. One image serves every card. A new L4T release is a new image, built
-by GitHub Actions.
+card's FAT volume `CIDATA`. One image serves every card. GitHub Actions builds a new image when
+NVIDIA publishes a release.
 
 ## Status
 
@@ -13,6 +13,7 @@ WIP. Release R39.2.1-2 booted on one module, a P3767-0005 in a Turing Pi 2 (2026
   grew the root to fill the card.
 - **Failed:** `packages:`, because cloud-init's final stage ran with the clock at 1970 (Traps).
 - **Fixed, untested:** releases after R39.2.1-2 make that stage wait for NTP. None has booted yet.
+- **New, not yet run in CI:** the daily check for NVIDIA releases (A new L4T release).
 
 ## What you need
 
@@ -20,8 +21,8 @@ WIP. Release R39.2.1-2 booted on one module, a P3767-0005 in a Turing Pi 2 (2026
   module with a microSD slot. Production Orin Nano (P3767-0003/0004) and Orin NX modules have no
   slot, and NVIDIA's tools allow SD layouts only for SKU 0005 (`flash.sh`, `check_device_mismatch`).
   Any carrier works.
-- **Its QSPI firmware:** the same L4T release and board config as the image. Both are in
-  [versions.env](versions.env): R39.2.1, `jetson-orin-nano-devkit-super`.
+- **Its QSPI firmware:** the same L4T release and board config as the image. Both are in the
+  release's name and notes.
   - QSPI is flashed separately, from an x86-64 Linux host, with NVIDIA's tools. This repo doesn't
     do it.
   - NVIDIA staff: "the QSPI version must match the JetPack version flashed onto the SD card".
@@ -31,8 +32,10 @@ WIP. Release R39.2.1-2 booted on one module, a P3767-0005 in a Turing Pi 2 (2026
 
 ## Making a card
 
-1. Download the `.img.xz` and its `.sha256` from a
-   [release](https://github.com/andyattebery/jetson-orin-nano-l4t-minimal/releases).
+1. Download the `.img.xz` and its `.sha256` from the newest
+   [release](https://github.com/andyattebery/jetson-orin-nano-l4t-minimal/releases) for your
+   module's QSPI. Its tag starts with the same `R<version>`. The newest release overall can be a
+   newer L4T.
 2. Check the download: `sha256sum -c <name>.img.xz.sha256` (on macOS, `shasum -a 256 -c`).
 3. Write it to the card with balenaEtcher, NVIDIA's recommended tool, or with
    `xz -dc <name>.img.xz | sudo dd of=<card> bs=4M`. In Raspberry Pi Imager, pick no OS
@@ -126,10 +129,13 @@ stamped with the time in the log.
      against 4 natively on arm64 (2026-10-03).
 2. **`image`, on x86-64 only**, because NVIDIA's flashing tools are x86 binaries. It takes that
    tarball and runs:
+   - a check of which of NVIDIA's packages mention `UDA` (A new L4T release);
    - NVIDIA's host prerequisites;
    - `apply_binaries.sh`;
-   - the image edits: the cloud-init drop-in, removal of the SSH host keys, and
-     `systemd-time-wait-sync` enabled;
+   - the image edits:
+     - the cloud-init drop-in, and a check that it sorts last;
+     - removal of the SSH host keys;
+     - `systemd-time-wait-sync` enabled;
    - `jetson-disk-image-creator.sh ... -d SD`;
    - `make-cidata.sh`;
    - `xz` and sha256.
@@ -141,9 +147,12 @@ Each stage first installs the host packages it needs, then downloads the BSP and
 `ubuntu-24.04-arm` runner and `image` on `ubuntu-24.04`.
 - **The hand-off:** the tarball passes between the two jobs through the Actions cache, keyed by
   run. Artifacts would count against the account's storage quota.
-- **When:** a push to `main` that changes `versions.env`, `scripts/`, `files/` or the workflow,
-  or a manual run from the Actions tab.
-- **What it publishes:** a release, `R<L4T_VERSION>-<run number>`, with three files:
+- **When:**
+  - a push to `main` that changes `versions.env`, `scripts/`, `files/` or the workflow;
+  - a manual run from the Actions tab;
+  - daily, when it finds a newer NVIDIA release (A new L4T release).
+- **What it publishes:** a release, `R<L4T_VERSION>-<n>`, where `n` counts the builds of that L4T
+  version. Its notes name the QSPI release the card needs. It has three files:
   - the image;
   - its `.sha256`;
   - NVIDIA's license text.
@@ -152,7 +161,9 @@ Each stage first installs the host packages it needs, then downloads the BSP and
 ```
 mkdir -p work
 sudo scripts/build.sh rootfs --work-dir work --out out
-sudo scripts/build.sh image --rootfs-tar out/minimal-noble-R39.2.1-rootfs.tbz2 --work-dir work --out out
+. ./versions.env
+sudo scripts/build.sh image --rootfs-tar "out/$ROOTFS_FLAVOR-$UBUNTU_CODENAME-R$L4T_VERSION-rootfs.tbz2" \
+  --work-dir work --out out
 ```
 - **Hosts:** run `rootfs` on an arm64 or x86-64 host and `image` on an x86-64 one. Copy the
   tarball and its `.sha256` between them.
@@ -162,24 +173,47 @@ sudo scripts/build.sh image --rootfs-tar out/minimal-noble-R39.2.1-rootfs.tbz2 -
 
 ## A new L4T release
 
-1. Update `L4T_VERSION`, `BSP_URL` and `BSP_SHA256` in `versions.env`. NVIDIA publishes no
-   checksum, so compute it once: `curl -fL <url> | sha256sum`.
-2. Re-check `UDA` (next section) in the new BSP. Unpack it (`tar -xf <bsp>.tbz2`), then, on a
-   Debian or Ubuntu host:
-   ```
-   for d in $(find Linux_for_Tegra -name '*.deb'); do
-     n=$(dpkg-deb --fsys-tarfile "$d" | tar -xO 2>/dev/null | grep -a -c -w UDA)
-     [ "$n" != 0 ] && echo "$n $d"
-   done
-   ```
-   R39.2.1's hits:
-   - `nvidia-l4t-bootloader`, 26: the flash-server strings in its capsules;
-   - `nvidia-igx-bootloader`, 1: its capsule, not inspected;
-   - `nvidia-l4t-multimedia`, 1: inside a binary library, next to CUDA messages.
+**Within the same major version, it's automatic.** Every day the workflow runs
+[scripts/check-release.py](scripts/check-release.py).
+1. **Finding releases:** it reads NVIDIA's
+   [Jetson Linux archive](https://developer.nvidia.com/embedded/jetson-linux-archive), where each
+   release is a link whose text is its version. It also reads the main Jetson Linux page, which
+   links the current release's BSP.
+2. **The bump:** for the newest release with `versions.env`'s major version:
+   - it follows that release's page to its BSP link;
+   - it downloads the BSP once for its SHA-256;
+   - it rewrites `L4T_VERSION`, `BSP_URL` and `BSP_SHA256`.
+3. **The build:** the workflow commits that to `main` as `github-actions[bot]` and builds it in the
+   same run.
 
-   A new hit is worth reading before building.
+Why not something simpler:
+- **Not NVIDIA's apt repository:** it carries updates that have no BSP.
+- **Not a URL built from the version:** NVIDIA's paths differ between releases.
+
+**The build stops, rather than publishes, when a release breaks an assumption:**
+- **A package other than these mentions `UDA`** (next section). R39.2.1's hits:
+  - `nvidia-l4t-bootloader`, 26: the flash-server strings in its capsules;
+  - `nvidia-igx-bootloader`, 1: its capsule, not inspected;
+  - `nvidia-l4t-multimedia`, 1: inside a binary library, next to CUDA messages.
+- **A `cloud.cfg.d` file sets `datasource_list` after `99-nocloud-seed.cfg`.**
+- **`systemd-time-wait-sync` changes its `[Install]` section.**
+- **NVIDIA's package list for the flavor and codename is missing.**
+- **`nv_build_samplefs.sh` changes its host check** (Traps).
+
+To run the check by hand: the Actions tab, "Build image", "Run workflow", with "Look for a newer
+NVIDIA release first" ticked.
+
+**A newer major version opens an issue instead,** once per major, titled "Jetson Linux R<major>
+is out". A new major can move to another Ubuntu release or drop the Orin Nano: R38 was Thor-only.
+Moving to it is by hand:
+1. Check that the release supports the P3767-0005 and `BOARD_CONFIG`, and which Ubuntu release it
+   uses.
+2. Set `L4T_VERSION`, `BSP_URL` and `BSP_SHA256` in `versions.env`, and `UBUNTU_CODENAME` if it
+   changed. NVIDIA publishes no checksum, so compute it once: `curl -fL <url> | sha256sum`.
 3. Push to `main`.
-4. Flash every module's QSPI to the same release before it boots a new card.
+
+**Either way, by hand:** flash every module's QSPI to the new release before it boots a card from
+it.
 
 ## Why `UDA`
 
@@ -219,7 +253,8 @@ has one free for it.
     prints `x86_64`.
   - NVIDIA doesn't support building on arm64. The shim built the same R39.2.1 rootfs on an arm64
     Mac in about 2.5 minutes (2026-10-02).
-  - Re-check line 106 when bumping L4T.
+  - If NVIDIA changes that check, the arm64 build fails rather than builds something wrong. The
+    script exits 1 (lines 106-110), and `build.sh` stops when no `sample_fs.tbz2` was written.
 - **R39.2's image never grows its root partition.** NVIDIA, 2026-09-02: "On R39.2 the image from
   jetson-disk-image-creator.sh never expands, so the root filesystem stays at its generated size
   with no free space. Up to R36.5 this expansion was done on first boot by nvresizefs, which R39.2
@@ -257,6 +292,19 @@ has one free for it.
       apt-mark hold $(dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' 'nvidia-l4t-*' | awk '$1 == "ii" {print $2}')
   ```
   Nothing stops a later `apt install --reinstall nvidia-l4t-bootloader` or `dpkg-reconfigure`.
+- **GitHub turns the daily check off after 60 days without activity.** GitHub's docs: "In a
+  public repository, scheduled workflows are automatically disabled when no repository activity
+  has occurred in 60 days."
+  - NVIDIA's gap from R39.2.0 to R39.2.1 was 66 days.
+  - Users report a warning email first ("… will be disabled soon").
+  - Turn it back on with `gh workflow enable build.yml`, or from the Actions tab.
+- **The workflow commits to `main`.** A release bump is a commit by `github-actions[bot]`, so pull
+  before pushing.
+- **A failed automatic build isn't retried.**
+  - `versions.env` already names the new release, so the next day's check finds nothing newer.
+  - GitHub emails the failure to "the user who last modified the cron syntax in the workflow
+    file".
+  - Fix the cause and push, and the push builds it.
 - **Not for NVIDIA's OTA updates.** NVIDIA: "The memory layout used by flash.sh differs from the
   layout used by initrd flashing. To ensure successful OTA updates, production systems must use
   initrd flashing." Upgrade by writing a new card and flashing QSPI.
@@ -285,5 +333,10 @@ has one free for it.
 - **systemd 255 on noble** (`255.4-1ubuntu8.17`): the man pages for
   `systemd-time-wait-sync.service`(8), `systemd.timer`(5) and `systemd.target`(5) at
   https://manpages.ubuntu.com/manpages/noble/, and the units in the root filesystem.
+- **NVIDIA's release pages:** https://developer.nvidia.com/embedded/jetson-linux-archive,
+  https://developer.nvidia.com/embedded/jetson-linux, and the release pages they link.
+- **GitHub Actions docs:** "Events that trigger workflows" (`schedule`) and "Triggering a
+  workflow" (`GITHUB_TOKEN`):
+  https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/
 - **Raspberry Pi OS's move to cloud-init:**
   https://www.raspberrypi.com/news/cloud-init-on-raspberry-pi-os/ (2025-11-27).
