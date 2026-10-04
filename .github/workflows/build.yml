@@ -82,7 +82,7 @@ jobs:
     needs: check
     if: needs.check.outputs.build == 'true'
     # Native arm64: the root filesystem is about 990 arm64 packages. Under qemu on an x86 runner,
-    # NVIDIA's script took 73 minutes (run 37148236561); natively, 4.
+    # NVIDIA's script takes over an hour; natively, about 4 minutes.
     runs-on: ubuntu-24.04-arm
     # GitHub's limit for a job on its runners.
     timeout-minutes: 360
@@ -117,8 +117,8 @@ jobs:
         with:
           ref: ${{ needs.check.outputs.ref }}
 
-      # The image stage needs 30 GiB free. GitHub documents 14 GB of SSD for this runner, but run
-      # 37151129513 had 87 GB free before this step and 110 GB after.
+      # The image stage needs 30 GiB free. GitHub documents 14 GB of SSD for this runner, but it
+      # has had about 87 GB free before this step and 110 GB after.
       - name: Free disk space
         run: |
           df -h /

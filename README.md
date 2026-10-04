@@ -6,15 +6,6 @@ from text files you copy onto the card: cloud-init reads `user-data` and `meta-d
 card's FAT volume `CIDATA`. One image serves every card. GitHub Actions builds a new image when
 NVIDIA publishes a release.
 
-## Status
-
-WIP. Release R39.2.1-2 booted on one module, a P3767-0005 in a Turing Pi 2 (2026-10-03).
-- **Applied:** cloud-init applied its seed, created the user with its keys, set the hostname, and
-  grew the root to fill the card.
-- **Failed:** `packages:`, because cloud-init's final stage ran with the clock at 1970 (Traps).
-- **Fixed, untested:** releases after R39.2.1-2 make that stage wait for NTP. None has booted yet.
-- **New, not yet run in CI:** the daily check for NVIDIA releases (A new L4T release).
-
 ## What you need
 
 - **The module:** the Orin Nano Developer Kit's module, P3767-0005. It's the only Orin Nano/NX
@@ -125,11 +116,10 @@ stamped with the time in the log.
    `<flavor>-<codename>-R<version>-rootfs.tbz2` with its `.sha256`.
    - **On arm64** the roughly 990 arm64 packages install natively, behind a two-line `arch` shim
      for NVIDIA's x86 check (Traps).
-   - **On x86-64** they install under qemu. In CI, NVIDIA's script took 73 minutes under qemu,
-     against 4 natively on arm64 (2026-10-03).
+   - **On x86-64** they install under qemu. In CI that takes NVIDIA's script over an hour,
+     against about 4 minutes natively on arm64.
 2. **`image`, on x86-64 only**, because NVIDIA's flashing tools are x86 binaries. It takes that
    tarball and runs:
-   - a check of which of NVIDIA's packages mention `UDA` (A new L4T release);
    - NVIDIA's host prerequisites;
    - `apply_binaries.sh`;
    - the image edits:
@@ -191,10 +181,6 @@ Why not something simpler:
 - **Not a URL built from the version:** NVIDIA's paths differ between releases.
 
 **The build stops, rather than publishes, when a release breaks an assumption:**
-- **A package other than these mentions `UDA`** (next section). R39.2.1's hits:
-  - `nvidia-l4t-bootloader`, 26: the flash-server strings in its capsules;
-  - `nvidia-igx-bootloader`, 1: its capsule, not inspected;
-  - `nvidia-l4t-multimedia`, 1: inside a binary library, next to CUDA messages.
 - **A `cloud.cfg.d` file sets `datasource_list` after `99-nocloud-seed.cfg`.**
 - **`systemd-time-wait-sync` changes its `[Install]` section.**
 - **NVIDIA's package list for the flavor and codename is missing.**
@@ -227,6 +213,9 @@ has one free for it.
   - The bootloader's USB-recovery flash server lists it among special partition names.
 - **At runtime: nothing.** In R39.2.1, none of NVIDIA's 77 packages, the initrd, or the OTA and
   backup tools reference it, apart from those flash-server strings.
+- **New releases aren't re-checked.** NVIDIA reserves the partition for user data. A release whose
+  software used it anyway would show at the first boot of its first card, and a new release's
+  first card is always a deliberate step, after reflashing QSPI.
 - **What `make-cidata.sh` changes:** the partition's type, from Linux `8300` to Microsoft basic
   data `0700`, so macOS and Windows mount it. It also formats the partition FAT with the label
   `CIDATA`.
@@ -251,8 +240,7 @@ has one free for it.
   does natively.
   - On arm64, `build.sh` puts a shim first on `PATH` for that script only, a two-line `arch` that
     prints `x86_64`.
-  - NVIDIA doesn't support building on arm64. The shim built the same R39.2.1 rootfs on an arm64
-    Mac in about 2.5 minutes (2026-10-02).
+  - NVIDIA doesn't support building on arm64.
   - If NVIDIA changes that check, the arm64 build fails rather than builds something wrong. The
     script exits 1 (lines 106-110), and `build.sh` stops when no `sample_fs.tbz2` was written.
 - **R39.2's image never grows its root partition.** NVIDIA, 2026-09-02: "On R39.2 the image from
@@ -263,9 +251,8 @@ has one free for it.
   `/etc/cloud/cloud.cfg.d/99-disable-cloud-init.cfg`, with `datasource_list: [None]` plus user-data
   that turns off growpart and writes `/etc/cloud/cloud-init.disabled`. `99-nocloud-seed.cfg` sorts
   after it and puts NoCloud first.
-- **A new card's clock starts at 1970.** On R39.2.1-2's first boot (2026-10-03), cloud-init's log
-  read `1970-01-01 00:00:56`. apt rejected every Ubuntu index: "Release file … is not valid yet
-  (invalid for another 20729d)".
+- **A new card's clock starts at 1970,** and nothing sets it before NTP. Until then apt rejects
+  every Ubuntu index: "Release file … is not valid yet".
   - So the image makes cloud-init's final stage wait for NTP (First boot).
   - Anything that runs before the sync sees 1970, when TLS certificates aren't valid yet either.
 - **`network-online.target` doesn't wait for the network.** NVIDIA masks

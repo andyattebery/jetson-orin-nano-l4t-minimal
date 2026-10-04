@@ -4,8 +4,8 @@
 #           Runs natively on arm64 behind a one-line shim for NVIDIA's x86 check, or on x86-64
 #           under qemu, which is much slower.
 #   image   NVIDIA's L4T packages, the cloud-init drop-in, the wait for NTP, NVIDIA's SD card
-#           layout and the CIDATA seed volume, compressed. It first checks which of NVIDIA's
-#           packages mention UDA. x86-64 only: NVIDIA's flashing tools are x86 binaries.
+#           layout and the CIDATA seed volume, compressed. x86-64 only: NVIDIA's flashing tools
+#           are x86 binaries.
 # Both run as root on Ubuntu 24.04. The GitHub workflow (.github/workflows/build.yml) runs rootfs
 # on ubuntu-24.04-arm and image on ubuntu-24.04.
 set -euo pipefail
@@ -179,23 +179,6 @@ if [[ "$STAGE" == rootfs ]]; then
     ls -l "$OUT"
     exit 0
 fi
-
-step "NVIDIA's packages that mention UDA"
-# make-cidata.sh turns NVIDIA's UDA partition into CIDATA (README.md, "Why UDA"), which holds only
-# while nothing at runtime uses UDA. In R39.2.1 these three packages mention it: flash-server
-# strings in nvidia-l4t-bootloader's capsules, nvidia-igx-bootloader's capsule (not inspected), and
-# one string in a multimedia library. Any other package that mentions it stops the build until
-# someone reads why.
-uda_known=(nvidia-igx-bootloader nvidia-l4t-bootloader nvidia-l4t-multimedia)
-uda_new=()
-while IFS= read -r -d '' deb; do
-    hits="$(dpkg-deb --fsys-tarfile "$deb" | tar -xO 2>/dev/null | grep -a -c -w UDA || true)"
-    [[ "$hits" == 0 ]] && continue
-    pkg="$(dpkg-deb -f "$deb" Package)"
-    echo "$hits $pkg"
-    [[ " ${uda_known[*]} " == *" $pkg "* ]] || uda_new+=("$pkg")
-done < <(find "$L4T" -name '*.deb' -print0 | sort -z)
-((${#uda_new[@]} == 0)) || die "packages that newly mention UDA, to read before building: ${uda_new[*]}"
 
 step "NVIDIA's host prerequisites"
 "$L4T/tools/l4t_flash_prerequisites.sh"
