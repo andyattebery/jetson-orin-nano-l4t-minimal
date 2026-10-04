@@ -5,3 +5,8 @@
 # cloud-guest-utils, whose growpart grows the root partition to the card. R39.2's image never does
 # that itself: NVIDIA dropped nvresizefs.
 cloud-init
+
+# fwupd stages QSPI capsule updates. nvidia-l4t-bootloader's install script calls fwupdmgr and
+# fwupdtool, and exits 1 without them. NVIDIA's desktop root filesystem has fwupd; its minimal
+# package list doesn't.
+fwupd

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the SD card image (README.md), in two stages:
-#   rootfs  NVIDIA's minimal Ubuntu 24.04 root filesystem plus files/extra-packages (cloud-init).
-#           Runs natively on arm64 behind a one-line shim for NVIDIA's x86 check, or on x86-64
-#           under qemu, which is much slower.
+#   rootfs  NVIDIA's minimal Ubuntu 24.04 root filesystem plus files/extra-packages (cloud-init
+#           and fwupd). Runs natively on arm64 behind a one-line shim for NVIDIA's x86 check, or
+#           on x86-64 under qemu, which is much slower.
 #   image   NVIDIA's L4T packages, the cloud-init drop-in, the wait for NTP, NVIDIA's SD card
 #           layout and the CIDATA seed volume, compressed. x86-64 only: NVIDIA's flashing tools
 #           are x86 binaries.

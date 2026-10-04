@@ -87,8 +87,9 @@ There's no user and no way in, so rewrite the card.
 ## What's in the image
 
 - **Root filesystem:** NVIDIA's `minimal` flavor from `nv_build_samplefs.sh` (Ubuntu 24.04, no
-  desktop, no oem-config), plus `cloud-init` ([files/extra-packages](files/extra-packages)).
-  `cloud-guest-utils`, for growpart, comes in as a dependency.
+  desktop, no oem-config), plus `cloud-init` and `fwupd`
+  ([files/extra-packages](files/extra-packages)). `cloud-guest-utils`, for growpart, comes in as a
+  dependency.
 - **NVIDIA's packages**, installed by `apply_binaries.sh` and left unchanged.
 - **[files/99-nocloud-seed.cfg](files/99-nocloud-seed.cfg)**, which turns cloud-init back on for
   `CIDATA` (Traps).
